@@ -13,8 +13,8 @@ Smart Inbox-to-Calendar Assistant - thin wrapper around the Gmail API for:
 IMPORTANT - this file talks to a REAL Gmail account and must be run on YOUR
 OWN machine, not inside a sandboxed cloud session, because:
   1. It needs a `credentials.json` OAuth client file that only you can
-     generate from your own Google Cloud Console project (Anthropic/Claude
-     has no access to your Gmail account and never will).
+     generate from your own Google Cloud Console project (no one else
+     has access to your Gmail account).
   2. The OAuth consent step opens a real browser window on your machine.
 
 See ../README.md for the exact one-time setup steps.
