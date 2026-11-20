@@ -6,3 +6,4 @@ venv/
 credentials.json
 token.json
 .gmail_ai_classifier/
+.smart_inbox_calendar_assistant/

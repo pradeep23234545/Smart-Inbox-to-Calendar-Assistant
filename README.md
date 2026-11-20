@@ -1,259 +1,220 @@
-# AI-Based Gmail Email Filtering & Prioritization Agent
+# Smart Inbox-to-Calendar Assistant
 
-An AI Capstone Project (pure Python) built as an **autonomous background
-agent** — no GUI to operate, no .exe to install. Point it at your Gmail
-account once, and it keeps classifying and labeling new mail on its own.
+**Never miss a commitment that arrives by email.**
 
-## 1. Problem Statement
+Smart Inbox-to-Calendar Assistant is a pure-Python, autonomous background
+agent for Gmail. It reads new mail, works out which emails contain a
+**time-bound commitment** (a meeting, interview, appointment, exam, payment
+due date, submission deadline or event), pulls out the event details, and
+puts them on your **Google Calendar** with reminders timed for that kind of
+commitment, a short summary of the email and a link back to it. It also
+keeps the original smart-labelling engine: each email gets a category, a
+priority and a plain-language explanation.
 
-Gmail already sorts mail into Primary/Social/Promotions and flags spam, but
-it is a black box: it doesn't explain *why* an email was filed a certain
-way, it doesn't visibly learn from an individual user's corrections, and it
-has no notion of *urgency* independent of category. This project builds an
-intelligent **agent** that runs quietly in the background and:
+```
+                ┌──────────────────────────── Smart Inbox-to-Calendar Assistant ────────────────────────────┐
+ New Gmail ───► │ Classify (rules → ML) ─► Priority score ─► Commitment extraction ─► Adaptive reminder plan │
+ message        │                                                     │                                    │
+                │                     Ledger: duplicate / thread / reschedule / cancel check               │
+                │                                                     │                                    │
+                │              confident? ── yes ─► Google Calendar event (confirmed)                      │
+                │                        └── no ──► "[Review]" tentative event + review queue              │
+                └───────────────────────────────────────────────────────────────────────────────────────────┘
+                   Gmail labels: AI/<Category>, AI/Priority-<Band>, AI/Reminder-Set, AI/Reminder-Review
+```
 
-1. Classifies each new email into **6 categories**: `Primary`, `Social`,
-   `Promotions`, `Spam`, and two **new, non-Gmail categories** —
-   `Finance_Bills` (bank alerts, invoices, EMIs, subscriptions) and
-   `Job_Academic` (interview calls, offer letters, exam/semester notices).
-2. **Explains** every decision in plain language (which words/rule drove it).
-3. Scores every email's **priority** (Low/Medium/High/Critical) using a
-   transparent hybrid rule + ML-confidence model — independent of category.
-4. **Compares** three ML algorithms head-to-head and picks the best one.
-5. **Learns from user corrections** — a lightweight personalization loop.
-6. Runs **on its own, on a schedule**, applying real Gmail labels — never
-   reprocessing the same email twice.
+## 1. Problem
 
-## 2. Why this is not "just Gmail again"
+Important commitments get buried in email: an interview slot in a recruiter's
+third paragraph, a credit-card due date under a statement date, an exam
+timetable written as `04/12`, a meeting quietly moved in a reply. Calendar
+apps can only add events from structured invitations. Mail that is just
+written in plain language, which covers most bills, college notices, HR
+mail and personal mail, never reaches the calendar unless the user copies
+it by hand.
 
-| Feature | Gmail has it? | This project |
+## 2. What the assistant does
+
+| # | Capability | Where |
 |---|---|---|
-| Primary/Social/Promotions | Yes | Reproduced as a baseline, not the novelty |
-| Spam detection | Yes | Reproduced as a baseline, not the novelty |
-| **Custom categories** (Finance_Bills, Job_Academic) | No | **New** |
-| **Explainable classification** (why this label?) | No | **New** |
-| **Custom priority model** (urgency score, reasons shown) | Partial/opaque | **New, transparent** |
-| **Compare ML algorithms** (NB vs SVM vs Decision Tree) | N/A | **New, academic core** |
-| **Personalized learning from corrections** | Partial/opaque | **New, lightweight version** |
-| **Runs autonomously in the background** | N/A | **New** |
+| 1 | Classifies mail into 6 categories (Primary, Social, Promotions, Spam, **Finance_Bills**, **Job_Academic**) with an explanation | `pipeline.py`, `rule_filter.py`, `classifiers.py`, `explainability.py` |
+| 2 | Scores **priority** (Low/Medium/High/Critical) independent of category | `priority_model.py` |
+| 3 | **Detects time-bound commitments** and their type: interview, meeting, appointment, exam, payment due, submission deadline, event | `event_extractor.py` |
+| 4 | **Extracts date, time, duration, time zone, location / meeting link, amount**, and resolves relative dates ("tomorrow", "next Friday", "within 5 working days") against the time the email was **received** | `event_extractor.py` |
+| 5 | **Reasons about ambiguity**: DD/MM vs MM/DD, missing year, weekday-date conflicts, "next Friday", missing AM/PM, missing time, vague dates, competing dates. Each issue is typed and graded by severity | `event_extractor.py` |
+| 6 | **Adaptive reminder lead times** by commitment type, urgency and available lead time, kept out of quiet hours | `reminder_planner.py` |
+| 7 | Creates the **Google Calendar event** with custom notifications, an urgency colour, the email summary, the reasoning, and a **Gmail link** (as a clickable source chip and in the description) | `calendar_client.py`, `email_summarizer.py` |
+| 8 | **Four-layer duplicate detection**, plus **reschedule and cancellation** handling that updates the existing event | `reminder_store.py`, `reminder_engine.py` |
+| 9 | **Confidence-gated autonomy**: confident extractions are scheduled; uncertain ones become `[Review]` tentative events in a review queue | `reminder_engine.py` |
+| 10 | **Review, edit, dismiss, restore**, from the command line or the desktop app. Dismissed reminders are never re-created | `review.py`, `gui_app.py` |
+| 11 | **Learns from your review decisions** per sender and commitment type: senders you keep approving get more autonomy, and senders you keep dismissing go to review | `reminder_store.py` |
+| 12 | Runs **unattended** on a schedule; dry-run by default; every action logged | `agent.py`, installers |
 
-## 3. Syllabus Module Mapping
-
-- **Module 1** — The whole app is a goal-based/utility-based *intelligent
-  agent*: it perceives (checks the inbox on a timer), reasons (classifies
-  and prioritizes), and acts (applies Gmail labels) with no human in the
-  loop once it's turned on — the clearest possible demonstration of Module
-  1's agent architecture.
-- **Module 4** — `rule_filter.py` is a rule-based/forward-chaining reasoning
-  layer used as a fast, explainable first pass before ML.
-- **Module 5** — `classifiers.py` trains and compares **Naive Bayes**,
-  **Linear SVM**, and **Decision Tree** on TF-IDF features; `feedback.py`
-  implements a simple personalized-learning loop.
-- **Module 6** — `explainability.py` (Explainable AI) and the dry-run /
-  least-privilege / audit-log design of the agent (AI Ethics).
-
-## 4. Project Structure
+## 3. Project structure
 
 ```
-gmail_ai_classifier/
-├── src/
-│   ├── agent.py                 # >>> THE AGENT - this is what you run <<<
-│   ├── paths.py                 # per-user app-data folder handling
-│   ├── bootstrap.py             # auto-generates dataset + trains models on first run
-│   ├── generate_dataset.py      # builds the synthetic labeled dataset (270 emails, 6 classes)
-│   ├── preprocessing.py         # text cleaning + TF-IDF
-│   ├── rule_filter.py           # Module 4: rule-based reasoning layer
-│   ├── classifiers.py           # Module 5: train & compare NB / SVM / Decision Tree
-│   ├── explainability.py        # Module 6: explain any prediction
-│   ├── priority_model.py        # custom priority scoring
-│   ├── pipeline.py              # ties rules + ML + explainability + priority together
-│   ├── feedback.py              # personalized correction + retrain loop
-│   ├── gmail_client.py          # Gmail API wrapper (OAuth, fetch, label)
-│   ├── gui_app.py               # optional: a manual point-and-click tester (not required)
-│   ├── demo.py                  # offline command-line demo (no Gmail needed)
-│   └── main_live.py             # one-shot manual CLI version of the Gmail integration
-├── install_windows_task.bat     # makes the agent run automatically (Windows)
-├── install_cron.sh              # makes the agent run automatically (macOS/Linux)
-├── requirements.txt
-└── README.md
+src/
+├── agent.py               # >>> the background assistant - this is what you run <<<
+├── review.py              # review / approve / edit / dismiss / restore reminders (CLI)
+├── gui_app.py             # optional desktop app (incl. "Calendar Reminders" review tab)
+│
+├── event_extractor.py     # temporal commitment extraction + ambiguity reasoning
+├── reminder_planner.py    # adaptive reminder lead-time planner
+├── email_summarizer.py    # commitment-focused extractive summary
+├── reminder_store.py      # SQLite ledger, 4-layer dedup, sender feedback memory
+├── reminder_engine.py     # decision engine: gate → extract → plan → dedup → decide → act
+├── calendar_client.py     # Google Calendar API wrapper
+├── google_auth.py         # shared OAuth (gmail.modify + calendar.events), safe scope upgrade
+├── gmail_client.py        # Gmail API wrapper (fetch, labels, deep links)
+│
+├── pipeline.py            # rules + ML + explainability + priority
+├── rule_filter.py         # rule-based reasoning layer
+├── classifiers.py         # trains & compares Naive Bayes / Linear SVM / Decision Tree
+├── explainability.py      # why a category was predicted
+├── priority_model.py      # transparent priority scoring
+├── feedback.py            # learns from category corrections
+├── preprocessing.py, generate_dataset.py, bootstrap.py, paths.py
+├── demo.py                # offline demo, no Google account needed
+└── main_live.py           # manual one-shot labelling run
+tests/test_reminders.py    # 29 offline tests (fake calendar)
 ```
 
-Everything the agent creates at runtime — trained models, the training
-dataset, your corrections, the cached Gmail login token, its config, and
-its log file — lives in a per-user folder, not inside this project folder:
+Runtime data (models, dataset, OAuth token, `reminders.db`, config, logs)
+lives in a per-user folder, never in the project:
 
 ```
-Windows      C:\Users\<you>\.gmail_ai_classifier\
-macOS/Linux  ~/.gmail_ai_classifier/
+Windows      C:\Users\<you>\.smart_inbox_calendar_assistant\
+macOS/Linux  ~/.smart_inbox_calendar_assistant/
 ```
 
-## 5. One-Time Setup
+If you used an earlier build of this project, its data folder is **copied**
+here automatically on first run (the old folder is left untouched).
+
+## 4. One-time setup
 
 ```bash
-cd gmail_ai_classifier
 pip install -r requirements.txt
 ```
 
-Then connect a real Gmail account (needed since the agent's whole job is
-to act on your real inbox):
-
-1. Go to **Google Cloud Console** → create a new project.
-2. Enable the **Gmail API** for that project.
-3. Go to **APIs & Services → Credentials → Create Credentials → OAuth
-   client ID**, choose **Desktop app**, and download the resulting JSON.
-4. Rename it to `credentials.json` and place it in your app-data folder:
-   `~/.gmail_ai_classifier/credentials.json` (Windows:
-   `C:\Users\<you>\.gmail_ai_classifier\credentials.json`). Create the
-   folder if it doesn't exist yet, or just run the agent once first (step
-   6 below) and it will create the folder for you.
-5. Only the `gmail.modify` scope is ever requested (read + label, never
-   send or delete) — a deliberate least-privilege choice discussed in the
-   AI Ethics section of the report (Module 6).
-6. Run it once by hand to sign in and see it work:
+1. In **Google Cloud Console**, create a project (or reuse your existing one).
+2. Enable the **Gmail API** and the **Google Calendar API**.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID →
+   Desktop app**. Download the JSON, rename it `credentials.json` and put it in
+   the data folder shown above. If you already had one, it was copied over.
+4. If the OAuth consent screen is in *Testing* mode, add your Gmail address as
+   a test user, and add the `.../auth/calendar.events` scope to the consent screen.
+5. Grant access once (a browser window opens):
    ```bash
-   python src/agent.py --once
+   python src/agent.py --authorize
    ```
-   The first time, a browser window opens asking you to sign in and
-   approve access — this is the standard Google consent screen, and the
-   login is cached afterward so you won't need to repeat it.
+   Only two scopes are requested: `gmail.modify` (read + label, never send or
+   delete) and `calendar.events` (manage events only, with no access to
+   calendar settings or sharing).
 
-## 6. How It Behaves — Safe By Default
+## 5. Try it
 
-The agent starts in **dry-run mode**. It reads your inbox, classifies each
-new email, and **logs exactly what it would do** — but makes no changes to
-your mailbox at all. You can run `python src/agent.py --once` as many
-times as you like to watch its predictions build up in the log with zero
-risk.
+```bash
+python src/demo.py                         # offline: classification + the reminder each email would get
+python src/review.py try "Interview Invitation" "Please join the interview tomorrow at 10 AM IST."
+python -m unittest discover -s tests -v    # 29 offline tests
+python src/agent.py --once                 # live, DRY-RUN: logs what it would label/schedule
+python src/agent.py --scan-reminders --days 14   # dry-run look-back over the last 2 weeks
+```
 
-When you're happy with what you see, turn on real changes **once**:
+When the log looks right, turn on real changes (saved permanently):
+
 ```bash
 python src/agent.py --once --enable
 ```
-This is saved permanently in its config — every future run (including
-scheduled ones) will now actually apply labels, until you run `--disable`.
 
-Every email it touches gets marked with an `AI/Processed` label, so a
-message is never re-classified or reprocessed on a later run — the agent
-always only looks at genuinely new mail (`in:inbox -label:AI/Processed`).
+## 6. How a reminder is decided
 
-## 7. Running It Automatically In The Background
+1. **Gate**: Spam and Promotions are never turned into reminders. Social mail is used only when it shows strong meeting or event evidence.
+2. **Clean**: quoted reply history, forwarded headers and footers are removed, so old dates in a thread are ignored.
+3. **Find** every date expression (absolute, numeric, relative, weekday) and every time expression (12h/24h, ranges, noon/midnight, time-zone suffixes), then **bind** each time to the nearest date in the same clause.
+4. **Score** each candidate by the cue words just before it (*due, deadline, scheduled, by, before, no later than…*), negative context (*dated, debited on, ordered on, ago…*), whether it appears in the subject, whether it has a time, and whether it is in the future.
+5. **Type** the commitment with weighted keyword evidence. Subject words count double, and words near the chosen date count again.
+6. **Grade ambiguity**: each issue is `minor`, `major` or `blocking`. Major and blocking issues lower confidence and send the reminder to review.
+7. **Plan reminders**:
 
-This is the whole point — set it up once, forget about it.
+   | Type | Reminders (timed event) | All-day (no time given) |
+   |---|---|---|
+   | Interview | prep (25% of lead, 1–3 days) · 1 day · 2 h | 2 days & 1 day before, 09:00 |
+   | Exam | prep (30% of lead, 2–7 days) · 1 day · 2 h | 7, 2, 1 days before |
+   | Payment due | prep (20%, 3–5 days) · 1 day · 3 h | 3 & 1 days before (+1 week if High/Critical) |
+   | Submission deadline | prep (30%, 1–10 days) · 1 day · 3 h | 5, 2, 1 days before |
+   | Meeting | 1 day · 15 min | 1 day before |
+   | Appointment | 1 day · 1 h | 1 day before |
+   | Event | prep (10%) · 1 h | 1 day before |
 
-**Windows:** double-click `install_windows_task.bat`. It registers a
-Windows Scheduled Task that silently runs the agent every 15 minutes
-whenever you're logged in — no window, no console, nothing visible.
-- Change how often it runs by editing `INTERVAL` near the top of the
-  `.bat` file, then run it again (it replaces the old schedule).
-- Remove it later: `schtasks /delete /tn "GmailAIAgent" /f`
+   The early "prep" reminder is scaled by urgency (Critical ×1.5, High ×1.25,
+   Low ×0.75). Reminders that would fire between 22:00 and 07:00 move to
+   21:00, reminders already in the past are dropped, and Critical items also
+   get an email notification.
+8. **Deduplicate**: L1 same message; L2 same Gmail thread (a new date plus wording like "rescheduled" means a reschedule); L3 semantic fingerprint; L4 fuzzy title match within ±1 day, widened to ±14 days for reschedules. Cancellations mark the event `[Cancelled]`.
+9. **Decide**: confidence ≥ `auto_create_threshold` (0.70) with no major issues gives a confirmed event. Anything else gets a `[Review]` tentative event, or with `review_policy: "hold"` it stays in the queue only.
 
-**macOS/Linux:** run `./install_cron.sh`. It adds a cron entry that runs
-the agent every 15 minutes.
-- Change the interval by editing `INTERVAL_MINUTES` near the top of the
-  script, then run it again.
-- Remove it later: `crontab -e` and delete the line mentioning `agent.py`.
-
-**Either OS, simplest option:** just leave a terminal open running:
-```bash
-python src/agent.py --loop --interval-minutes 15
-```
-Stop it any time with Ctrl+C.
-
-All three approaches call the exact same `agent.py` — the scheduler just
-decides when it wakes up.
-
-## 8. Checking On It / Auditing What It Did
-
-Every run appends to a plain-text log:
-```
-~/.gmail_ai_classifier/logs/agent.log
-```
-Each line shows the timestamp, the email's subject/sender, the category
-and priority it was given, and whether the change was actually applied or
-just logged (dry-run). This log is your evidence trail for the report and
-your way of sanity-checking the agent without opening Gmail.
-
-## 9. Other ways to use the same pipeline (optional)
-
-The agent shares its brain with a few other entry points, useful for
-building/demoing the project itself rather than running it long-term:
+## 7. Review, edit, dismiss
 
 ```bash
-python src/demo.py       # classify 8 unseen sample emails, no Gmail needed
-python src/feedback.py   # demo: correct a wrong prediction & retrain
-python src/gui_app.py    # optional point-and-click tester, if you want to
-                          # manually try single emails or re-run the model
-                          # comparison — not required for the agent to work
-python src/main_live.py  # a manual one-shot Gmail run with a --apply flag,
-                          # if you want more control than agent.py's config
+python src/review.py list --pending
+python src/review.py show 7
+python src/review.py approve 7                       # or: approve --all-pending
+python src/review.py edit 7 --date 2026-12-05 --time 14:30
+python src/review.py edit 7 --all-day --remind 2880,600
+python src/review.py dismiss 7                       # removes the calendar event; never re-created
+python src/review.py restore 7
+python src/review.py --offline dismiss 7             # change the local ledger only
 ```
 
-## 10. How Classification Works (pipeline.py)
+The desktop app (`python src/gui_app.py`) has the same actions on its
+**Calendar Reminders** tab. Its **Classify Email** tab also previews the
+reminder any pasted email would produce.
 
-```
-Email (sender, subject, body)
-        │
-        ▼
-1. Rule-based layer (rule_filter.py)
-   e.g. sender domain = linkedin.com -> Social (confidence 0.97)
-        │  (no confident rule fired)
-        ▼
-2. ML fallback (best of Naive Bayes / SVM / Decision Tree, chosen
-   automatically by classifiers.py based on macro-F1 on a held-out test set)
-        │
-        ▼
-3. Explainability layer (explainability.py)
-   -> top words that drove the decision, algorithm-appropriate:
-      Naive Bayes: log-likelihood ratio · SVM: coef_ x tfidf · Tree: feature_importances_
-        │
-        ▼
-4. Priority scoring (priority_model.py)
-   -> category base weight + urgency keywords + model confidence
-   -> Low / Medium / High / Critical, with reasons logged
-```
+## 8. Configuration
 
-## 11. Algorithm Comparison (reproducible — run `python src/classifiers.py`)
+`agent_config.json` in the data folder:
 
-On the bundled 270-email dataset (25% held out for testing):
-
-| Algorithm | Accuracy | Macro F1 |
+| Key | Default | Meaning |
 |---|---|---|
-| Naive Bayes | ~100% | ~100% |
-| Linear SVM | ~98.5% | ~98.5% |
-| Decision Tree | ~97% | ~97% |
+| `auto_apply` | `false` | dry-run until `--enable` |
+| `calendar_reminders` | `true` | `--no-calendar` / `--calendar` toggle |
+| `calendar_id` | `"primary"` | which calendar receives events |
+| `timezone` | `""` | IANA name (e.g. `Asia/Kolkata`); empty = this computer's zone |
+| `date_order` | `"DMY"` | how to read `04/05`: DMY = 4 May, MDY = April 5 |
+| `auto_create_threshold` | `0.70` | confidence needed to schedule without review |
+| `min_event_confidence` | `0.35` | below this nothing is created |
+| `review_policy` | `"tentative"` | `"tentative"` = `[Review]` events on calendar; `"hold"` = queue only |
+| `skip_categories` | `["Spam","Promotions"]` | never create reminders from these |
+| `email_notification_bands` | `["Critical"]` | priority bands that also get an email reminder |
+| `max_per_run`, `interval_minutes`, `archive_low_priority` | | as before |
 
-Naive Bayes is selected automatically (highest macro-F1). This is expected
-academically: Naive Bayes is historically very strong on short, keyword-rich
-text like emails (the same reason it's the classic textbook algorithm for
-spam filtering), while Decision Trees tend to overfit sparse TF-IDF features
-without pruning. **Your project report should present this table and this
-justification — it is the strongest "compare ML algorithms" evidence.**
+## 9. Running in the background
 
-## 12. Ethics Notes (Module 6 — include in your report)
+- **Windows**: double-click `install_windows_task.bat`. It registers the task `SmartInboxCalendarAssistant`, which runs every 15 minutes, and replaces the task left by older versions. Remove it with `schtasks /delete /tn "SmartInboxCalendarAssistant" /f`.
+- **macOS/Linux**: `./install_cron.sh`.
+- **Any OS**: `python src/agent.py --loop --interval-minutes 15`.
 
-- Reading and auto-labeling personal email raises real privacy/autonomy
-  concerns; this is exactly why the agent defaults to dry-run and requires
-  an explicit, one-time `--enable` before it touches your mailbox for real.
-- Only `gmail.modify` is requested — never `gmail.send` or delete
-  permissions.
-- Every action is logged to a plain-text, human-readable file, so an
-  autonomous agent never acts invisibly.
-- The `AI/Processed` marker ensures the agent's actions are idempotent —
-  running it more times than intended never double-labels or re-archives
-  the same email.
-- The dataset used to train the models is synthetic; a real deployment
-  should get explicit consent before scanning a user's inbox content.
+Background runs never open a browser. If Calendar access hasn't been granted
+yet, reminders wait in the review queue and the log tells you to run
+`--authorize`.
 
-## 13. Possible Extensions (for viva / future work)
+Audit log: `~/.smart_inbox_calendar_assistant/logs/assistant.log`
 
-- Replace batch retraining in `feedback.py` with true incremental learning
-  (`MultinomialNB.partial_fit`), and wire a way to submit corrections
-  without needing the optional GUI (e.g. by replying to a summary email).
-- Use Gmail push notifications (Cloud Pub/Sub) instead of polling, so the
-  agent reacts within seconds of a new email arriving instead of waiting
-  for the next scheduled run.
-- Extend `priority_model.py` with a learned (not hand-weighted) priority
-  model trained on which emails a user actually opens/replies to quickly.
-- Add action-item extraction (e.g. detect "please reply by Friday") using
-  simple NLP — noted in the brief as a possible but non-essential feature,
-  left out of this prototype to keep scope focused.
+## 10. Classification engine (unchanged core)
+
+Rules first (sender domains, keyword triggers), then the best of Naive
+Bayes, Linear SVM and Decision Tree chosen by macro-F1, then a word-level
+explanation and a transparent priority score. On the bundled 270-email
+synthetic dataset, Naive Bayes reaches about 100% macro-F1, Linear SVM about
+98.5% and the Decision Tree about 97%. Run `python src/classifiers.py` to
+reproduce this.
+
+## 11. Privacy and safety
+
+- All analysis runs **locally**. Email text is never sent to any third-party AI service.
+- Least-privilege scopes: `gmail.modify` + `calendar.events`. No send, no delete of mail.
+- Dry-run by default; one explicit `--enable` to act.
+- Uncertain extractions are **never silently guessed**. They are marked `[Review]` with the reason shown.
+- Every created event links back to its source email, and every decision is explained and logged.
+- Dismissals are respected permanently, so the assistant never re-adds what you removed.

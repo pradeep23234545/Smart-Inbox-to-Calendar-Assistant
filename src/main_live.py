@@ -25,7 +25,7 @@ LOW_PRIORITY_CATEGORIES = {"Promotions", "Spam", "Social"}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AI Gmail classifier - live mode")
+    parser = argparse.ArgumentParser(description="Smart Inbox-to-Calendar Assistant - manual live run")
     parser.add_argument("--max", type=int, default=15, help="Number of recent inbox emails to process")
     parser.add_argument("--apply", action="store_true", help="Actually create/apply Gmail labels (default: dry run)")
     parser.add_argument("--archive-low-priority", action="store_true",

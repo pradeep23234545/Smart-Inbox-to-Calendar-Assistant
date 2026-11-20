@@ -7,7 +7,7 @@ incorporates the correction on the next retrain. This is what makes the
 system "personal" rather than a fixed, one-size-fits-all classifier like
 Gmail's built-in tabs.
 
-Design (kept intentionally simple for a capstone prototype):
+Design (kept intentionally simple):
   1. Every correction is appended to data/corrections.csv (sender, subject,
      body, correct_label, source="user_correction").
   2. retrain_with_feedback() merges corrections.csv into the base training

@@ -1,7 +1,7 @@
 """
 gui_app.py
 ----------
-Desktop GUI for the AI Gmail Classifier capstone project, built with
+Desktop GUI for the Smart Inbox-to-Calendar Assistant, built with
 Tkinter (bundled with Python - no extra GUI toolkit needed, and the easiest
 to package into a standalone .exe with PyInstaller).
 
@@ -15,8 +15,9 @@ Tabs:
   3. Gmail Inbox      - connect to a real Gmail account, fetch recent mail,
                         see it classified in a table, and (opt-in) apply
                         the labels for real.
-  4. About            - project/report summary for quick reference during
-                        a viva or demo.
+  4. Calendar Reminders - review, approve, edit, dismiss or restore the
+                        calendar reminders generated from your email.
+  5. About            - project summary for quick reference during a demo.
 
 Run directly with:  python gui_app.py
 Package into a Windows .exe with: build_exe.bat  (see README.md)
@@ -33,8 +34,10 @@ import bootstrap
 import feedback
 import classifiers
 from pipeline import EmailClassifierPipeline
+from reminder_engine import ReminderEngine, describe
+from reminder_store import ReminderStore, STATUS_REVIEW, STATUS_SCHEDULED
 
-APP_TITLE = "AI Gmail Classifier"
+APP_TITLE = "Smart Inbox-to-Calendar Assistant"
 
 EXAMPLE_EMAILS = [
     dict(sender="notifications@linkedin.com", subject="You appeared in 9 searches this week",
@@ -49,10 +52,19 @@ EXAMPLE_EMAILS = [
          body="Hey! Are you free for dinner this Saturday? Let me know, would love to catch up."),
 ]
 
-ABOUT_TEXT = """AI-Based Gmail Email Filtering & Prioritization System
-========================================================
+ABOUT_TEXT = """Smart Inbox-to-Calendar Assistant
+=================================
 
-An AI Capstone Project built entirely in Python.
+Never miss a commitment that arrives by email.
+
+The assistant reads new mail, detects time-bound commitments - meetings,
+interviews, appointments, exams, payment due dates, submission deadlines
+and events - extracts the date, time, type, urgency and context, and puts
+them on your Google Calendar with reminders timed for that kind of
+commitment, a short summary of the email and a link back to it.
+Duplicates, follow-ups, reschedules and cancellations update the existing
+event instead of creating clutter, and anything ambiguous is placed in a
+review queue ("Calendar Reminders" tab) instead of being guessed silently.
 
 WHAT IT DOES
 ------------
@@ -137,16 +149,19 @@ class App(tk.Tk):
         self.tab_classify = ttk.Frame(self.notebook)
         self.tab_train = ttk.Frame(self.notebook)
         self.tab_gmail = ttk.Frame(self.notebook)
+        self.tab_reminders = ttk.Frame(self.notebook)
         self.tab_about = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_classify, text="Classify Email")
         self.notebook.add(self.tab_train, text="Model Training")
         self.notebook.add(self.tab_gmail, text="Gmail Inbox")
+        self.notebook.add(self.tab_reminders, text="Calendar Reminders")
         self.notebook.add(self.tab_about, text="About")
 
         self._build_classify_tab()
         self._build_train_tab()
         self._build_gmail_tab()
+        self._build_reminders_tab()
         self._build_about_tab()
 
     # ------------------------------------------------------------------
@@ -255,6 +270,11 @@ class App(tk.Tk):
         self.priority_box = scrolledtext.ScrolledText(result_frame, height=3, wrap="word", state="disabled")
         self.priority_box.pack(fill="x", padx=5, pady=(0, 8))
 
+        ttk.Label(result_frame, text="Detected commitment / calendar reminder:", font=("", 10, "bold")).pack(
+            anchor="w", padx=5)
+        self.commitment_box = scrolledtext.ScrolledText(result_frame, height=6, wrap="word", state="disabled")
+        self.commitment_box.pack(fill="both", expand=True, padx=5, pady=(0, 8))
+
         corr_frame = ttk.LabelFrame(frame, text="Not right? Correct it (the model personalizes to you)")
         corr_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Label(corr_frame, text="Correct category:").pack(side="left", padx=5, pady=6)
@@ -312,6 +332,7 @@ class App(tk.Tk):
         self.result_source_var.set(result["decision_source"])
         self._set_readonly(self.explanation_box, result["explanation_text"])
         self._set_readonly(self.priority_box, "; ".join(result["priority_reasons"]))
+        self._set_readonly(self.commitment_box, self._preview_commitment(sender, subject, body, result))
         self.correction_var.set(result["predicted_category"])
 
     def _on_submit_correction(self):
@@ -565,7 +586,232 @@ class App(tk.Tk):
         self._run_bg(task, done)
 
     # ------------------------------------------------------------------
-    # Tab 4: About
+    # Commitment preview (Classify tab) - offline, nothing is written
+    # ------------------------------------------------------------------
+    def _preview_commitment(self, sender, subject, body, result):
+        import datetime as _dt
+        try:
+            import agent
+            cfg = agent.load_config()
+        except Exception:
+            cfg = {}
+        engine = ReminderEngine(ReminderStore(":memory:"), None, cfg)
+        cand = engine.analyse({"id": None, "sender": sender, "subject": subject, "body": body,
+                               "date": _dt.datetime.now()}, result)
+        if not cand.get("is_event"):
+            return f"No calendar reminder: {cand.get('reason', '')}"
+        text = describe(cand)
+        text += "\n\nWhy:\n" + "\n".join(f"  - {e}" for e in cand["explanation"])
+        text += f"\n\nReminder plan: {cand['reminder_rationale']}"
+        return text
+
+    # ------------------------------------------------------------------
+    # Tab 4: Calendar Reminders (review / edit / dismiss)
+    # ------------------------------------------------------------------
+    def _build_reminders_tab(self):
+        frame = self.tab_reminders
+        self._reminder_engine = None
+
+        ttk.Label(frame, wraplength=900, justify="left", text=(
+            "Reminders the assistant created from your email. '[Review]' items were uncertain (ambiguous date, "
+            "missing time, low confidence) - approve, edit or dismiss them. Dismissed reminders are removed "
+            "from Google Calendar and never re-created."
+        )).pack(anchor="w", padx=10, pady=(10, 4))
+
+        top = ttk.Frame(frame)
+        top.pack(fill="x", padx=10, pady=4)
+        ttk.Label(top, text="Show:").pack(side="left")
+        self.rem_filter_var = tk.StringVar(value="Upcoming")
+        cb = ttk.Combobox(top, textvariable=self.rem_filter_var, state="readonly", width=14,
+                          values=["Upcoming", "Needs review", "All"])
+        cb.pack(side="left", padx=5)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_reminders())
+        ttk.Button(top, text="Refresh", command=self._refresh_reminders).pack(side="left", padx=5)
+        self.cal_status_var = tk.StringVar(value="Google Calendar: not connected (changes stay local)")
+        ttk.Button(top, text="Connect Google Calendar", command=self._on_connect_calendar).pack(side="left", padx=5)
+        ttk.Label(top, textvariable=self.cal_status_var).pack(side="left", padx=8)
+
+        columns = ("id", "status", "when", "type", "conf", "title")
+        self.tree_rem = ttk.Treeview(frame, columns=columns, show="headings", height=10, selectmode="browse")
+        for col, label, w in zip(columns, ["#", "Status", "When", "Type", "Conf.", "Title"],
+                                  [40, 110, 140, 140, 60, 430]):
+            self.tree_rem.heading(col, text=label)
+            self.tree_rem.column(col, width=w, anchor="w")
+        self.tree_rem.pack(fill="both", expand=True, padx=10, pady=6)
+        self.tree_rem.bind("<<TreeviewSelect>>", lambda e: self._show_selected_reminder())
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", padx=10)
+        for text, fn in [("Approve", self._on_rem_approve), ("Edit...", self._on_rem_edit),
+                         ("Dismiss", self._on_rem_dismiss), ("Restore", self._on_rem_restore),
+                         ("Open Email", self._on_rem_open_email)]:
+            ttk.Button(btns, text=text, command=fn).pack(side="left", padx=(0, 6))
+
+        self.rem_detail = scrolledtext.ScrolledText(frame, height=9, wrap="word", state="disabled")
+        self.rem_detail.pack(fill="both", expand=False, padx=10, pady=8)
+        self.after(300, self._refresh_reminders)
+
+    def _rem_engine(self):
+        if self._reminder_engine is None:
+            try:
+                import agent
+                cfg = agent.load_config()
+            except Exception:
+                cfg = {}
+            self._reminder_engine = ReminderEngine(ReminderStore(), None, cfg)
+        return self._reminder_engine
+
+    def _on_connect_calendar(self):
+        self.status_var.set("Connecting to Google Calendar (a browser window may open)...")
+        cfg = self._rem_engine().cfg
+
+        def task():
+            import calendar_client
+            service = calendar_client.get_calendar_service(interactive=True)
+            return calendar_client.CalendarClient(service, cfg.get("calendar_id", "primary"),
+                                                  cfg.get("timezone", ""))
+
+        def done(result, err):
+            if err:
+                messagebox.showerror("Calendar connection failed", str(err))
+                self.status_var.set("Calendar connection failed.")
+                return
+            self._rem_engine().calendar = result
+            self.cal_status_var.set("Google Calendar: connected")
+            self.status_var.set("Google Calendar connected - review actions now update your calendar.")
+
+        self._run_bg(task, done)
+
+    def _refresh_reminders(self):
+        eng = self._rem_engine()
+        mode = self.rem_filter_var.get()
+        if mode == "Needs review":
+            rows = eng.store.list([STATUS_REVIEW])
+        elif mode == "All":
+            rows = eng.store.list()
+        else:
+            rows = eng.store.list([STATUS_REVIEW, STATUS_SCHEDULED], upcoming_only=True)
+        for r in self.tree_rem.get_children():
+            self.tree_rem.delete(r)
+        for r in rows:
+            when = r["start"][:10] + (" (all day)" if r["all_day"] else " " + r["start"][11:16])
+            self.tree_rem.insert("", "end", iid=str(r["id"]), values=(
+                r["id"], r["status"], when, r["event_type"], f"{float(r['confidence'] or 0):.0%}", r["title"]))
+        self._set_readonly(self.rem_detail, f"{len(rows)} reminder(s). Select one to see details.")
+
+    def _selected_reminder_id(self):
+        sel = self.tree_rem.selection()
+        if not sel:
+            messagebox.showinfo("Select a reminder", "Select a reminder in the list first.")
+            return None
+        return int(sel[0])
+
+    def _show_selected_reminder(self):
+        sel = self.tree_rem.selection()
+        if not sel:
+            return
+        rec = self._rem_engine().store.get(int(sel[0]))
+        if not rec:
+            return
+        text = describe(rec)
+        text += "\n\nWhy it was created:\n" + "\n".join(f"  - {e}" for e in (rec.get("explanation") or []))
+        if rec.get("reminder_rationale"):
+            text += f"\n\nReminder plan: {rec['reminder_rationale']}"
+        self._set_readonly(self.rem_detail, text)
+
+    def _rem_action(self, fn, verb):
+        rid = self._selected_reminder_id()
+        if rid is None:
+            return
+        try:  # SQLite connections are bound to this (GUI) thread, so run inline
+            result = fn(rid)
+        except Exception as err:  # noqa - surfaced to the user
+            messagebox.showerror(f"{verb} failed", str(err))
+            return
+        self.status_var.set(f"{verb}: #{rid} {result['title']}")
+        self._refresh_reminders()
+        if self.tree_rem.exists(str(rid)):
+            self.tree_rem.selection_set(str(rid))
+
+    def _on_rem_approve(self):
+        self._rem_action(self._rem_engine().approve, "Approved")
+
+    def _on_rem_dismiss(self):
+        if not self.tree_rem.selection():
+            self._selected_reminder_id()
+            return
+        if not messagebox.askyesno("Dismiss reminder",
+                                   "Remove this reminder (and its Google Calendar event, if connected)?\n"
+                                   "It will not be re-created from similar emails."):
+            return
+        self._rem_action(self._rem_engine().dismiss, "Dismissed")
+
+    def _on_rem_restore(self):
+        self._rem_action(self._rem_engine().restore, "Restored")
+
+    def _on_rem_open_email(self):
+        rid = self._selected_reminder_id()
+        if rid is None:
+            return
+        rec = self._rem_engine().store.get(rid)
+        if rec and rec.get("gmail_link"):
+            import webbrowser
+            webbrowser.open(rec["gmail_link"])
+
+    def _on_rem_edit(self):
+        import datetime as _dt
+        if not self.tree_rem.selection():
+            self._selected_reminder_id()
+            return
+        rid = int(self.tree_rem.selection()[0])
+        rec = self._rem_engine().store.get(rid)
+        start = _dt.datetime.fromisoformat(rec["start"])
+
+        win = tk.Toplevel(self)
+        win.title(f"Edit reminder #{rid}")
+        win.transient(self)
+        win.columnconfigure(1, weight=1)
+        old_remind = [r["minutes"] for r in (rec.get("reminders") or []) if r.get("method") == "popup"]
+        fields = {
+            "title": tk.StringVar(value=rec["title"]),
+            "date": tk.StringVar(value=start.strftime("%Y-%m-%d")),
+            "time": tk.StringVar(value="" if rec["all_day"] else start.strftime("%H:%M")),
+            "remind": tk.StringVar(value=",".join(str(m) for m in old_remind)),
+            "location": tk.StringVar(value=rec.get("location") or ""),
+        }
+        all_day_var = tk.BooleanVar(value=bool(rec["all_day"]))
+        rows = [("Title", "title"), ("Date (YYYY-MM-DD)", "date"), ("Time (HH:MM, 24h)", "time"),
+                ("Reminders (minutes before, comma-separated)", "remind"), ("Location / link", "location")]
+        for i, (label, key) in enumerate(rows):
+            ttk.Label(win, text=label).grid(row=i, column=0, sticky="w", padx=8, pady=4)
+            ttk.Entry(win, textvariable=fields[key], width=60).grid(row=i, column=1, sticky="we", padx=8, pady=4)
+        ttk.Checkbutton(win, text="All-day", variable=all_day_var).grid(row=len(rows), column=1, sticky="w", padx=8)
+
+        def save():
+            try:
+                d = _dt.datetime.strptime(fields["date"].get().strip(), "%Y-%m-%d").date()
+                t_raw = fields["time"].get().strip()
+                is_all_day = all_day_var.get() or not t_raw
+                t = _dt.datetime.strptime(t_raw, "%H:%M").time() if (t_raw and not is_all_day) else _dt.time(0, 0)
+                remind_raw = fields["remind"].get().strip()
+                remind = [int(x) for x in remind_raw.split(",") if x.strip()] if remind_raw else None
+            except ValueError as e:
+                messagebox.showerror("Invalid value", str(e), parent=win)
+                return
+            new_start = _dt.datetime.combine(d, t)
+            changed_when = new_start != start or bool(is_all_day) != bool(rec["all_day"])
+            win.destroy()
+            self._rem_action(lambda r: self._rem_engine().edit(
+                r, title=fields["title"].get().strip() or None,
+                start=new_start if changed_when else None,
+                all_day=is_all_day if changed_when else None,
+                reminder_minutes=remind if remind != old_remind else None,
+                location=fields["location"].get().strip()), "Edited")
+
+        ttk.Button(win, text="Save", command=save).grid(row=len(rows) + 1, column=1, sticky="e", padx=8, pady=10)
+
+    # ------------------------------------------------------------------
+    # Tab 5: About
     # ------------------------------------------------------------------
     def _build_about_tab(self):
         frame = self.tab_about

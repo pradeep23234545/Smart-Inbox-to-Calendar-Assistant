@@ -1,7 +1,7 @@
 """
 gmail_client.py
 ----------------
-Thin wrapper around the Gmail API (google-api-python-client) for:
+Smart Inbox-to-Calendar Assistant - thin wrapper around the Gmail API for:
   - OAuth2 authentication (runs a local browser consent flow once, then
     reuses a cached token.json)
   - Fetching recent inbox messages (sender, subject, body)
@@ -20,62 +20,32 @@ OWN machine, not inside a sandboxed cloud session, because:
 See ../README.md for the exact one-time setup steps.
 """
 
-import os
 import base64
-from email.mime.text import MIMEText
+import re
+from datetime import datetime
 
-from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-import paths
+import google_auth
 
-# Minimum scopes needed: read messages + modify labels. We deliberately do
-# NOT request the broader gmail.settings or delete/send scopes - this project
-# only reads and re-labels mail, in line with the ethics/least-privilege
-# discussion in Module 6.
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-
-CREDENTIALS_PATH = paths.credentials_path()
-TOKEN_PATH = paths.token_path()
+# Minimum Gmail scope needed: read messages + modify labels. We deliberately
+# do NOT request send/delete scopes - this assistant only reads and
+# re-labels mail. (Calendar access is a separate scope, see google_auth.py.)
+SCOPES = [google_auth.GMAIL_SCOPE]
 
 LABEL_PREFIX = "AI"  # all labels we create are namespaced under "AI/..."
 
 
-def get_gmail_service():
+def get_gmail_service(interactive: bool = True):
     """Authenticate (via cached token, or a fresh OAuth consent flow the
     first time) and return an authorized Gmail API service object."""
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    creds = google_auth.get_credentials(SCOPES, interactive=interactive)
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except RefreshError as exc:
-                error_response = next(
-                    (arg for arg in exc.args if isinstance(arg, dict)), {}
-                )
-                if error_response.get("error") != "invalid_grant":
-                    raise
-                creds = None
 
-        if not creds or not creds.valid:
-            if not os.path.exists(CREDENTIALS_PATH):
-                raise FileNotFoundError(
-                    "credentials.json not found. Download your OAuth client "
-                    "credentials from Google Cloud Console and place them at "
-                    f"{os.path.abspath(CREDENTIALS_PATH)}. See README.md."
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
+def gmail_link(msg_id: str) -> str:
+    """Deep link that opens this exact message in the Gmail web UI."""
+    return f"https://mail.google.com/mail/u/0/#all/{msg_id}"
 
 
 def _decode_part(data: str) -> str:
@@ -99,7 +69,6 @@ def _extract_body(payload) -> str:
                 return text
 
     if payload.get("mimeType") == "text/html" and payload.get("body", {}).get("data"):
-        import re
         html = _decode_part(payload["body"]["data"])
         return re.sub("<[^<]+?>", " ", html)
 
@@ -113,13 +82,28 @@ def list_recent_messages(service, max_results: int = 20, query: str = "in:inbox"
 
 
 def get_message_content(service, msg_id: str):
-    """Fetch one message and return {sender, subject, body}."""
+    """Fetch one message and return {id, thread_id, sender, subject, body,
+    date, link}. `date` is when Gmail received the message, as a naive
+    local-time datetime - it is the reference point for resolving relative
+    expressions such as "tomorrow" or "next Friday"."""
     msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
     headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
     sender = headers.get("from", "")
     subject = headers.get("subject", "")
     body = _extract_body(msg["payload"])
-    return {"id": msg_id, "sender": sender, "subject": subject, "body": body}
+    try:
+        received = datetime.fromtimestamp(int(msg.get("internalDate", 0)) / 1000)
+    except (TypeError, ValueError, OSError):
+        received = datetime.now()
+    return {
+        "id": msg_id,
+        "thread_id": msg.get("threadId", msg_id),
+        "sender": sender,
+        "subject": subject,
+        "body": body,
+        "date": received,
+        "link": gmail_link(msg_id),
+    }
 
 
 _label_cache = {}
